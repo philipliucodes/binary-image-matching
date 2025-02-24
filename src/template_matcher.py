@@ -59,7 +59,7 @@ def transform_pixels(image_array, alpha_channel, white_threshold):
 
 def process_frame(frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, 
                   last_matched_template, last_match_position, search_width, search_height):
-    """Processes a single frame for template matching, prioritizing search around the last match position."""
+    """Processes a single frame for template matching, first checking if the template has not moved, then expanding the search region."""
     if not os.path.exists(frame_path):
         print(f"Error: Frame {frame_path} not found, skipping template matching.")
         return last_matched_template, last_match_position
@@ -88,7 +88,15 @@ def process_frame(frame_path, template_images, confidence_threshold, white_thres
 
         search_regions = []
 
-        # If a last match exists, search around it first using user-specified dimensions
+        # **STEP 1: Check the exact last match position first**
+        if last_match_position is not None:
+            x_prev, y_prev = last_match_position
+
+            # Ensure the previous match position is within bounds
+            if 0 <= x_prev <= iw - tw and 0 <= y_prev <= ih - th:
+                search_regions.append((x_prev, x_prev, y_prev, y_prev))  # Check only this pixel location
+
+        # **STEP 2: If not found, check the surrounding region**
         if last_match_position is not None:
             x_prev, y_prev = last_match_position
             x_start = max(0, x_prev - search_width // 2)
@@ -97,7 +105,7 @@ def process_frame(frame_path, template_images, confidence_threshold, white_thres
             y_end = min(ih - th, y_prev + search_height // 2)
             search_regions.append((x_start, x_end, y_start, y_end))
 
-        # Add the full-frame search as a backup
+        # **STEP 3: If still not found, perform a full-frame search**
         search_regions.append((0, iw - tw, 0, ih - th))
 
         for x_start, x_end, y_start, y_end in search_regions:

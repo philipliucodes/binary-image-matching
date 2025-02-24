@@ -57,60 +57,78 @@ def transform_pixels(image_array, alpha_channel, white_threshold):
     transformed[~almost_white & non_transparent] = 0
     return transformed
 
-def process_frame(frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, last_matched_template):
-    """Processes a single frame for template matching, skips other templates if a match is found, writes results to CSV, and deletes the frame after processing."""
+def process_frame(frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, 
+                  last_matched_template, last_match_position, search_width, search_height):
+    """Processes a single frame for template matching, prioritizing search around the last match position."""
     if not os.path.exists(frame_path):
         print(f"Error: Frame {frame_path} not found, skipping template matching.")
-        return last_matched_template
-    
+        return last_matched_template, last_match_position
+
     input_image = Image.open(frame_path).convert("RGBA")
     input_array = np.array(input_image)
     input_alpha = input_array[:, :, 3]
     input_transformed = transform_pixels(input_array, input_alpha, white_threshold)
-    
+
     if last_matched_template and last_matched_template in template_images:
         template_images.remove(last_matched_template)
         template_images.insert(0, last_matched_template)
-    
+
     best_template = None
-    max_match_score = 0
     best_match_position = (None, None)
     best_match_percentage = 0.0
-    
+
     for template_filename in template_images:
         template_image = Image.open(template_filename).convert("RGBA")
         template_array = np.array(template_image)
         template_alpha = template_array[:, :, 3]
         template_transformed = transform_pixels(template_array, template_alpha, white_threshold)
-        
+
         ih, iw = input_transformed.shape
         th, tw = template_transformed.shape
-        
-        for y in range(ih - th + 1):
-            for x in range(iw - tw + 1):
-                roi = input_transformed[y:y+th, x:x+tw]
-                mask = template_alpha > 0
-                total_pixels = np.count_nonzero(mask)
-                
-                if total_pixels > 0:
-                    matching_pixels = np.sum(roi[mask] == template_transformed[mask])
-                    match_score = matching_pixels / total_pixels
-                    
-                    if match_score > confidence_threshold:
-                        best_template = os.path.basename(template_filename)
-                        best_match_position = (x, y)
-                        best_match_percentage = match_score * 100
-                        break
+
+        search_regions = []
+
+        # If a last match exists, search around it first using user-specified dimensions
+        if last_match_position is not None:
+            x_prev, y_prev = last_match_position
+            x_start = max(0, x_prev - search_width // 2)
+            x_end = min(iw - tw, x_prev + search_width // 2)
+            y_start = max(0, y_prev - search_height // 2)
+            y_end = min(ih - th, y_prev + search_height // 2)
+            search_regions.append((x_start, x_end, y_start, y_end))
+
+        # Add the full-frame search as a backup
+        search_regions.append((0, iw - tw, 0, ih - th))
+
+        for x_start, x_end, y_start, y_end in search_regions:
+            for y in range(y_start, y_end + 1):
+                for x in range(x_start, x_end + 1):
+                    roi = input_transformed[y:y+th, x:x+tw]
+                    mask = template_alpha > 0
+                    total_pixels = np.count_nonzero(mask)
+
+                    if total_pixels > 0:
+                        matching_pixels = np.sum(roi[mask] == template_transformed[mask])
+                        match_score = matching_pixels / total_pixels
+
+                        if match_score > confidence_threshold:
+                            best_template = os.path.basename(template_filename)
+                            best_match_position = (x, y)
+                            best_match_percentage = match_score * 100
+                            break
+                if best_template:
+                    break
             if best_template:
                 break
-    
+
     with open(csv_output, mode='a', newline='') as file:
         writer = csv.writer(file)
         if best_template:
             writer.writerow([os.path.basename(frame_path), best_template, best_match_position[0], best_match_position[1], f"{best_match_percentage:.2f}"])
             print(f"Frame '{os.path.basename(frame_path)}': Best template '{best_template}' at ({best_match_position[0]}, {best_match_position[1]}) with {best_match_percentage:.2f}% match.")
             last_matched_template = template_filename
-            
+            last_match_position = best_match_position
+
             if save_bboxes:
                 result_array = np.array(input_image)
                 cv2.rectangle(result_array, best_match_position, (best_match_position[0] + tw, best_match_position[1] + th), (255, 0, 0, 255), 2)
@@ -121,32 +139,37 @@ def process_frame(frame_path, template_images, confidence_threshold, white_thres
             writer.writerow([os.path.basename(frame_path), "No match", "N/A", "N/A", "0.00"])
             print(f"Frame '{os.path.basename(frame_path)}': No template matches found.")
             last_matched_template = None
-    
+            last_match_position = None
+
     os.remove(frame_path)
     print(f"Deleted frame: {frame_path}")
-    return last_matched_template
+    return last_matched_template, last_match_position
 
-def template_matcher(video_path, template_path, interval, confidence_threshold, white_threshold, output_dir, csv_output, save_bboxes):
+def template_matcher(video_path, template_path, interval, confidence_threshold, white_threshold, output_dir, csv_output, save_bboxes, search_width, search_height):
     """Extracts frames one at a time, performs template matching efficiently, and deletes frames after processing."""
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.dirname(csv_output), exist_ok=True)
-    
+
     timestamps = generate_timestamps(video_path, interval)
     template_images = [os.path.join(template_path, f) for f in sorted(os.listdir(template_path)) if is_image(f)]
-    
+
     if not template_images:
         print(f"Error: No valid template images found in '{template_path}'")
         return
-    
+
     with open(csv_output, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(["frame_name", "best_template", "match_x", "match_y", "match_percentage"])
-    
+
     last_matched_template = None
+    last_match_position = None  
+
     for timestamp in timestamps:
         frame_path = extract_frame(video_path, timestamp, output_dir)
         if frame_path:
-            last_matched_template = process_frame(frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, last_matched_template)
+            last_matched_template, last_match_position = process_frame(
+                frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, last_matched_template, last_match_position, search_width, search_height
+            )
 
 def main():
     """Parses command-line arguments and runs the template matcher on extracted video frames."""
@@ -157,9 +180,11 @@ def main():
     parser.add_argument("--output", type=str, default="output", help="Directory to save matched images and CSV (default: output/)")
     parser.add_argument("--csv", type=str, default="output/match_results.csv", help="CSV file to store match results (default: output/match_results.csv)")
     parser.add_argument("--save_bboxes", action='store_true', help="Flag to save images with bounding boxes (default: False)")
+    parser.add_argument("--search_width", type=int, default=100, help="Width of the region to search around the last matched position (default: 100)")
+    parser.add_argument("--search_height", type=int, default=100, help="Height of the region to search around the last matched position (default: 100)")
     args = parser.parse_args()
     
-    template_matcher(args.video_path, args.template_path, args.interval, 0.90, 200, args.output, args.csv, args.save_bboxes)
+    template_matcher(args.video_path, args.template_path, args.interval, 0.90, 200, args.output, args.csv, args.save_bboxes, args.search_width, args.search_height)
 
 if __name__ == "__main__":
     main()

@@ -43,33 +43,33 @@ The `template_matcher.py` script allows template matching using binarized images
 #### Command-line Usage
 
 ```bash
-python src/template_matcher.py path/to/video.mp4 template_image_or_directory --interval 0.01 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes
+python src/template_matcher.py path/to/video.mp4 template_image_or_directory --interval 5.0 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes --search_width 100 --search_height 100
 ```
 
 #### Examples
 
-1. **Match frames extracted from a video against templates at 10ms intervals:**
+1. **Match frames extracted from a video against templates at 10ms intervals, searching within a 100x100 pixel region around the last match:**
 
    ```bash
-   python src/template_matcher.py video.mp4 templates/ --interval 0.01 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes
+   python src/template_matcher.py video.mp4 templates/ --interval 0.01 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes --search_width 100 --search_height 100
    ```
 
-2. **Match frames extracted every 600 seconds against templates:**
+2. **Match frames extracted every 600 seconds against templates, with a larger 200x200 pixel search area around previous matches:**
 
    ```bash
-   python src/template_matcher.py video.mp4 templates/ --interval 600 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes
+   python src/template_matcher.py video.mp4 templates/ --interval 600 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes --search_width 200 --search_height 200
    ```
 
-3. **Match a single image against a single template:**
+3. **Match a single image against a single template without using a predefined search region:**
 
    ```bash
    python src/template_matcher.py input.jpg template.jpg --confidence_threshold 0.90 --white_threshold 200 --output results/
    ```
 
-4. **Match a single image against multiple templates (inside a directory):**
+4. **Match a single image against multiple templates (inside a directory), allowing a 150x150 pixel search area for optimization:**
 
    ```bash
-   python src/template_matcher.py input.jpg templates/ --confidence_threshold 0.90 --white_threshold 200 --output results/
+   python src/template_matcher.py input.jpg templates/ --confidence_threshold 0.90 --white_threshold 200 --output results/ --search_width 150 --search_height 150
    ```
 
 5. **Match multiple input images against a single template:**
@@ -78,10 +78,10 @@ python src/template_matcher.py path/to/video.mp4 template_image_or_directory --i
    python src/template_matcher.py images/ template.jpg --confidence_threshold 0.90 --white_threshold 200 --output results/
    ```
 
-6. **Match multiple input images against multiple templates:**
+6. **Match multiple input images against multiple templates with a tighter 75x75 pixel search window:**
 
    ```bash
-   python src/template_matcher.py images/ templates/ --confidence_threshold 0.90 --white_threshold 200 --output results/
+   python src/template_matcher.py images/ templates/ --confidence_threshold 0.90 --white_threshold 200 --output results/ --search_width 75 --search_height 75
    ```
 
 ---

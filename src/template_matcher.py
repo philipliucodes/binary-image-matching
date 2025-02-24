@@ -31,6 +31,8 @@ def generate_timestamps(video_path, interval):
         current_time += interval
     return timestamps
 
+# This can be optimzed further by using a more efficient frame extraction method
+# (e.g., using OpenCV directly instead of subprocess)
 def extract_frame(video_path, timestamp, output_dir):
     """Extracts a single frame from the video at the given timestamp using frame_extractor.py."""
     os.makedirs(output_dir, exist_ok=True)

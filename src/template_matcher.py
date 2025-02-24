@@ -18,14 +18,15 @@ def get_video_duration(video_path):
     return duration
 
 def generate_timestamps(video_path, interval):
-    """Generates a list of timestamps at the given interval."""
+    """Generates a list of timestamps at the given interval, ensuring precision."""
     duration = get_video_duration(video_path)
     timestamps = []
     current_time = 0.0
     while current_time < duration:
+        current_time = round(current_time, 3)  # Ensure precise rounding to milliseconds
         minutes = int(current_time // 60)
         seconds = int(current_time % 60)
-        milliseconds = int((current_time - int(current_time)) * 1000)
+        milliseconds = int(round((current_time - int(current_time)) * 1000))
         timestamps.append(f"{minutes:02}:{seconds:02}.{milliseconds:03}")
         current_time += interval
     return timestamps
@@ -56,16 +57,20 @@ def transform_pixels(image_array, alpha_channel, white_threshold):
     transformed[~almost_white & non_transparent] = 0
     return transformed
 
-def process_frame(frame_path, template_images, confidence_threshold, white_threshold, writer, save_bboxes, output_dir):
-    """Processes a single frame for template matching, writes results to CSV, and deletes the frame after processing."""
+def process_frame(frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, last_matched_template):
+    """Processes a single frame for template matching, skips other templates if a match is found, writes results to CSV, and deletes the frame after processing."""
     if not os.path.exists(frame_path):
         print(f"Error: Frame {frame_path} not found, skipping template matching.")
-        return
+        return last_matched_template
     
     input_image = Image.open(frame_path).convert("RGBA")
     input_array = np.array(input_image)
     input_alpha = input_array[:, :, 3]
     input_transformed = transform_pixels(input_array, input_alpha, white_threshold)
+    
+    if last_matched_template and last_matched_template in template_images:
+        template_images.remove(last_matched_template)
+        template_images.insert(0, last_matched_template)
     
     best_template = None
     max_match_score = 0
@@ -91,32 +96,38 @@ def process_frame(frame_path, template_images, confidence_threshold, white_thres
                     matching_pixels = np.sum(roi[mask] == template_transformed[mask])
                     match_score = matching_pixels / total_pixels
                     
-                    if match_score > max_match_score:
-                        max_match_score = match_score
+                    if match_score > confidence_threshold:
                         best_template = os.path.basename(template_filename)
                         best_match_position = (x, y)
                         best_match_percentage = match_score * 100
+                        break
+            if best_template:
+                break
     
-    if best_template:
-        writer.writerow([os.path.basename(frame_path), best_template, best_match_position[0], best_match_position[1], f"{best_match_percentage:.2f}"])
-        print(f"Frame '{os.path.basename(frame_path)}': Best template '{best_template}' at ({best_match_position[0]}, {best_match_position[1]}) with {best_match_percentage:.2f}% match.")
-        
-        if save_bboxes:
-            result_array = np.array(input_image)
-            cv2.rectangle(result_array, best_match_position, (best_match_position[0] + tw, best_match_position[1] + th), (255, 0, 0, 255), 2)
-            output_image = Image.fromarray(result_array)
-            output_path = os.path.join(output_dir, os.path.basename(frame_path))
-            output_image.save(output_path)
-    else:
-        writer.writerow([os.path.basename(frame_path), "No match", "N/A", "N/A", "0.00"])
-        print(f"Frame '{os.path.basename(frame_path)}': No template matches found.")
+    with open(csv_output, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if best_template:
+            writer.writerow([os.path.basename(frame_path), best_template, best_match_position[0], best_match_position[1], f"{best_match_percentage:.2f}"])
+            print(f"Frame '{os.path.basename(frame_path)}': Best template '{best_template}' at ({best_match_position[0]}, {best_match_position[1]}) with {best_match_percentage:.2f}% match.")
+            last_matched_template = template_filename
+            
+            if save_bboxes:
+                result_array = np.array(input_image)
+                cv2.rectangle(result_array, best_match_position, (best_match_position[0] + tw, best_match_position[1] + th), (255, 0, 0, 255), 2)
+                output_image = Image.fromarray(result_array)
+                output_path = os.path.join(output_dir, os.path.basename(frame_path))
+                output_image.save(output_path)
+        else:
+            writer.writerow([os.path.basename(frame_path), "No match", "N/A", "N/A", "0.00"])
+            print(f"Frame '{os.path.basename(frame_path)}': No template matches found.")
+            last_matched_template = None
     
-    # Delete frame after processing
     os.remove(frame_path)
     print(f"Deleted frame: {frame_path}")
+    return last_matched_template
 
 def template_matcher(video_path, template_path, interval, confidence_threshold, white_threshold, output_dir, csv_output, save_bboxes):
-    """Extracts frames one at a time, performs template matching, and deletes frames after processing."""
+    """Extracts frames one at a time, performs template matching efficiently, and deletes frames after processing."""
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.dirname(csv_output), exist_ok=True)
     
@@ -131,10 +142,11 @@ def template_matcher(video_path, template_path, interval, confidence_threshold, 
         writer = csv.writer(file)
         writer.writerow(["frame_name", "best_template", "match_x", "match_y", "match_percentage"])
     
-        for timestamp in timestamps:
-            frame_path = extract_frame(video_path, timestamp, output_dir)
-            if frame_path:
-                process_frame(frame_path, template_images, confidence_threshold, white_threshold, writer, save_bboxes, output_dir)
+    last_matched_template = None
+    for timestamp in timestamps:
+        frame_path = extract_frame(video_path, timestamp, output_dir)
+        if frame_path:
+            last_matched_template = process_frame(frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, last_matched_template)
 
 def main():
     """Parses command-line arguments and runs the template matcher on extracted video frames."""

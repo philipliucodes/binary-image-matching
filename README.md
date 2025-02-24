@@ -43,30 +43,42 @@ The `template_matcher.py` script allows template matching using binarized images
 #### Command-line Usage
 
 ```bash
-python src/template_matcher.py input_image_or_directory template_image_or_directory --confidence_threshold 0.90 --white_threshold 200 --output results/
+python src/template_matcher.py path/to/video.mp4 template_image_or_directory --interval 0.01 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes
 ```
 
 #### Examples
 
-1. **Match a single image against a single template:**
+1. **Match frames extracted from a video against templates at 10ms intervals:**
+
+   ```bash
+   python src/template_matcher.py video.mp4 templates/ --interval 0.01 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes
+   ```
+
+2. **Match frames extracted every 600 seconds against templates:**
+
+   ```bash
+   python src/template_matcher.py video.mp4 templates/ --interval 600 --confidence_threshold 0.90 --white_threshold 200 --output results/ --csv results/match_results.csv --save_bboxes
+   ```
+
+3. **Match a single image against a single template:**
 
    ```bash
    python src/template_matcher.py input.jpg template.jpg --confidence_threshold 0.90 --white_threshold 200 --output results/
    ```
 
-2. **Match a single image against multiple templates (inside a directory):**
+4. **Match a single image against multiple templates (inside a directory):**
 
    ```bash
    python src/template_matcher.py input.jpg templates/ --confidence_threshold 0.90 --white_threshold 200 --output results/
    ```
 
-3. **Match multiple input images against a single template:**
+5. **Match multiple input images against a single template:**
 
    ```bash
    python src/template_matcher.py images/ template.jpg --confidence_threshold 0.90 --white_threshold 200 --output results/
    ```
 
-4. **Match multiple input images against multiple templates:**
+6. **Match multiple input images against multiple templates:**
 
    ```bash
    python src/template_matcher.py images/ templates/ --confidence_threshold 0.90 --white_threshold 200 --output results/

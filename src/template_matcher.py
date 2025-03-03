@@ -4,7 +4,6 @@ import numpy as np
 import csv
 from PIL import Image
 import cv2
-import subprocess
 import ffmpeg
 
 def is_image(file_path):
@@ -31,21 +30,6 @@ def generate_timestamps(video_path, interval):
         current_time += interval
     return timestamps
 
-# This can be optimzed further by using a more efficient frame extraction method
-# (e.g., using OpenCV directly instead of subprocess)
-def extract_frame(video_path, timestamp, output_dir):
-    """Extracts a single frame from the video at the given timestamp using frame_extractor.py."""
-    os.makedirs(output_dir, exist_ok=True)
-    frame_path = os.path.join(output_dir, f"{os.path.basename(video_path).split('.')[0]}_{timestamp.replace(':', '_').replace('.', '_')}.bmp")
-    subprocess.run(["python", "src/frame_extractor.py", video_path, timestamp, "--output", output_dir], check=True)
-    
-    if os.path.exists(frame_path):
-        print(f"Frame extracted: {frame_path}")
-    else:
-        print(f"Warning: Frame {timestamp} was not found at expected path {frame_path}")
-    
-    return frame_path if os.path.exists(frame_path) else None
-
 def transform_pixels(image_array, alpha_channel, white_threshold):
     """Transforms an image to a binary mask based on transparency and whiteness."""
     transformed = np.zeros(image_array.shape[:2], dtype=np.uint8)
@@ -59,14 +43,58 @@ def transform_pixels(image_array, alpha_channel, white_threshold):
     transformed[~almost_white & non_transparent] = 0
     return transformed
 
-def process_frame(frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, 
-                  last_matched_template, last_match_position, search_width, search_height):
-    """Processes a single frame for template matching, first checking if the template has not moved, then expanding the search region."""
-    if not os.path.exists(frame_path):
-        print(f"Error: Frame {frame_path} not found, skipping template matching.")
-        return last_matched_template, last_match_position
+def extract_frame(video_path, timestamp):
+    """
+    Extracts a frame from a video at the given timestamp using OpenCV and returns it as a NumPy array.
+    
+    :param video_path: Path to the input video file.
+    :param timestamp: Time in "MM:SS:MS" or "MM:SS.MS" format.
+    :return: (frame as NumPy array, formatted timestamp) or (None, None) if extraction fails.
+    """
+    # Convert MM:SS:MS or MM:SS.MS to total milliseconds
+    try:
+        if ":" in timestamp and "." in timestamp:
+            minutes, seconds, milliseconds = map(int, timestamp.replace(":", ".").split("."))
+        elif ":" in timestamp:
+            minutes, seconds = map(int, timestamp.split(":"))
+            milliseconds = 0
+        else:
+            raise ValueError
 
-    input_image = Image.open(frame_path).convert("RGBA")
+        time_milliseconds = (minutes * 60 + seconds) * 1000 + milliseconds
+    except ValueError:
+        print(f"Error: Invalid timestamp format '{timestamp}'. Must be 'MM:SS:MS' or 'MM:SS.MS'.")
+        return None, None
+
+    # Open video
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"Error: Could not open video file '{video_path}'.")
+        return None, None
+
+    # Set the frame position
+    cap.set(cv2.CAP_PROP_POS_MSEC, time_milliseconds)
+
+    # Read the frame
+    success, frame = cap.read()
+    cap.release()
+    
+    if not success:
+        print(f"Error: Could not extract a frame at {timestamp}. Ensure the timestamp is within the video duration.")
+        return None, None
+
+    # Convert timestamp for naming
+    formatted_time = timestamp.replace(":", "_").replace(".", "_")
+
+    return frame, formatted_time
+
+def process_frame(frame_array, timestamp, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, 
+                  last_matched_template, last_match_position, search_width, search_height):
+    """
+    Processes a single frame in memory (as a NumPy array) for template matching.
+    Saves results to CSV with timestamp instead of "Dynamic_Frame".
+    """
+    input_image = Image.fromarray(frame_array).convert("RGBA")
     input_array = np.array(input_image)
     input_alpha = input_array[:, :, 3]
     input_transformed = transform_pixels(input_array, input_alpha, white_threshold)
@@ -89,16 +117,11 @@ def process_frame(frame_path, template_images, confidence_threshold, white_thres
         th, tw = template_transformed.shape
 
         search_regions = []
-
-        # **STEP 1: Check the exact last match position first**
         if last_match_position is not None:
             x_prev, y_prev = last_match_position
-
-            # Ensure the previous match position is within bounds
             if 0 <= x_prev <= iw - tw and 0 <= y_prev <= ih - th:
-                search_regions.append((x_prev, x_prev, y_prev, y_prev))  # Check only this pixel location
+                search_regions.append((x_prev, x_prev, y_prev, y_prev))
 
-        # **STEP 2: If not found, check the surrounding region**
         if last_match_position is not None:
             x_prev, y_prev = last_match_position
             x_start = max(0, x_prev - search_width // 2)
@@ -107,7 +130,6 @@ def process_frame(frame_path, template_images, confidence_threshold, white_thres
             y_end = min(ih - th, y_prev + search_height // 2)
             search_regions.append((x_start, x_end, y_start, y_end))
 
-        # **STEP 3: If still not found, perform a full-frame search**
         search_regions.append((0, iw - tw, 0, ih - th))
 
         for x_start, x_end, y_start, y_end in search_regions:
@@ -134,30 +156,23 @@ def process_frame(frame_path, template_images, confidence_threshold, white_thres
     with open(csv_output, mode='a', newline='') as file:
         writer = csv.writer(file)
         if best_template:
-            writer.writerow([os.path.basename(frame_path), best_template, best_match_position[0], best_match_position[1], f"{best_match_percentage:.2f}"])
-            print(f"Frame '{os.path.basename(frame_path)}': Best template '{best_template}' at ({best_match_position[0]}, {best_match_position[1]}) with {best_match_percentage:.2f}% match.")
+            writer.writerow([timestamp, best_template, best_match_position[0], best_match_position[1], f"{best_match_percentage:.2f}"])
+            print(f"[{timestamp}] Matched '{best_template}' at ({best_match_position[0]}, {best_match_position[1]}) with {best_match_percentage:.2f}% confidence.")
             last_matched_template = template_filename
             last_match_position = best_match_position
-
-            if save_bboxes:
-                result_array = np.array(input_image)
-                cv2.rectangle(result_array, best_match_position, (best_match_position[0] + tw, best_match_position[1] + th), (255, 0, 0, 255), 2)
-                output_image = Image.fromarray(result_array)
-                output_path = os.path.join(output_dir, os.path.basename(frame_path))
-                output_image.save(output_path)
         else:
-            writer.writerow([os.path.basename(frame_path), "No match", "N/A", "N/A", "0.00"])
-            print(f"Frame '{os.path.basename(frame_path)}': No template matches found.")
+            writer.writerow([timestamp, "No match", "N/A", "N/A", "0.00"])
+            print(f"[{timestamp}] No template match found.")
             last_matched_template = None
             last_match_position = None
 
-    os.remove(frame_path)
-    print(f"Deleted frame: {frame_path}")
     return last_matched_template, last_match_position
 
-def template_matcher(video_path, template_path, interval, confidence_threshold, white_threshold, output_dir, csv_output, save_bboxes, search_width, search_height):
-    """Extracts frames one at a time, performs template matching efficiently, and deletes frames after processing."""
-    os.makedirs(output_dir, exist_ok=True)
+def template_matcher(video_path, template_path, interval, confidence_threshold, white_threshold, csv_output, save_bboxes, search_width, search_height):
+    """
+    Extracts frames dynamically from memory, performs template matching, and logs results.
+    Saves match results with timestamps instead of "Dynamic_Frame".
+    """
     os.makedirs(os.path.dirname(csv_output), exist_ok=True)
 
     timestamps = generate_timestamps(video_path, interval)
@@ -167,18 +182,20 @@ def template_matcher(video_path, template_path, interval, confidence_threshold, 
         print(f"Error: No valid template images found in '{template_path}'")
         return
 
+    # Prepare CSV file
     with open(csv_output, mode='w', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow(["frame_name", "best_template", "match_x", "match_y", "match_percentage"])
+        writer.writerow(["timestamp", "best_template", "match_x", "match_y", "match_percentage"])  # Updated header
 
     last_matched_template = None
     last_match_position = None  
 
     for timestamp in timestamps:
-        frame_path = extract_frame(video_path, timestamp, output_dir)
-        if frame_path:
+        frame, formatted_time = extract_frame(video_path, timestamp)  # Extract frame dynamically
+        if frame is not None:
+            frame_array = np.array(frame)  # Convert frame to NumPy array for processing
             last_matched_template, last_match_position = process_frame(
-                frame_path, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, output_dir, last_matched_template, last_match_position, search_width, search_height
+                frame_array, formatted_time, template_images, confidence_threshold, white_threshold, csv_output, save_bboxes, last_matched_template, last_match_position, search_width, search_height
             )
 
 def main():
@@ -187,14 +204,13 @@ def main():
     parser.add_argument("video_path", type=str, help="Path to input video file.")
     parser.add_argument("template_path", type=str, help="Path to template image or directory.")
     parser.add_argument("--interval", type=float, default=5, help="Interval in seconds between extracted frames.")
-    parser.add_argument("--output", type=str, default="output", help="Directory to save matched images and CSV (default: output/)")
     parser.add_argument("--csv", type=str, default="output/match_results.csv", help="CSV file to store match results (default: output/match_results.csv)")
     parser.add_argument("--save_bboxes", action='store_true', help="Flag to save images with bounding boxes (default: False)")
     parser.add_argument("--search_width", type=int, default=100, help="Width of the region to search around the last matched position (default: 100)")
     parser.add_argument("--search_height", type=int, default=100, help="Height of the region to search around the last matched position (default: 100)")
     args = parser.parse_args()
     
-    template_matcher(args.video_path, args.template_path, args.interval, 0.90, 200, args.output, args.csv, args.save_bboxes, args.search_width, args.search_height)
+    template_matcher(args.video_path, args.template_path, args.interval, 0.90, 200, args.csv, args.save_bboxes, args.search_width, args.search_height)
 
 if __name__ == "__main__":
     main()
